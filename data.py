@@ -2,20 +2,18 @@ import pandas as pd
 from pathlib import Path
 import glob
 
-
 def load_data():
     """
     Đọc và chuẩn hóa dữ liệu từ các file gốc:
     - customers_vietnam.xlsx
     - depots_vietnam.xlsx
     - vehicles_vietnam.xlsx
-    - roads_*/roads_*.csv
-    Trả về 4 DataFrame đã sẵn sàng cho solver.
+    - roads/*.csv
     """
-    BASE_DIR = Path(__file__).resolve().parent.parent
+    BASE_DIR = Path(__file__).resolve().parent / "LMDO data_3i"
     DATA_DIR = BASE_DIR / "roads"
 
-    # --- Đọc dữ liệu chính ---
+    # === Đọc dữ liệu chính ===
     df_customers = pd.read_excel(BASE_DIR / "customers_vietnam.xlsx")
     df_depots = pd.read_excel(BASE_DIR / "depots_vietnam.xlsx")
     df_vehicles = pd.read_excel(BASE_DIR / "vehicles_vietnam.xlsx")
