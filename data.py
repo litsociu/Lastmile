@@ -1,6 +1,7 @@
 import pandas as pd
 from pathlib import Path
 import glob
+import os
 
 def load_data():
     """
@@ -12,6 +13,8 @@ def load_data():
     """
     BASE_DIR = Path(__file__).resolve().parent / "LMDO data_3i"
     DATA_DIR = BASE_DIR / "roads"
+    OUTPUT_DIR = BASE_DIR / "processed"
+    os.makedirs(OUTPUT_DIR, exist_ok=True) 
 
     # === Đọc dữ liệu chính ===
     df_customers = pd.read_excel(BASE_DIR / "customers_vietnam.xlsx")
@@ -80,10 +83,19 @@ def load_data():
     missing_customers = set(df_customers["Customer_ID"]) - set(df_roads_full["Destination_Node_ID"])
     if missing_customers:
         print(f"⚠️ Một số khách hàng không có cung đường: {list(missing_customers)[:10]} ...")
+    # --- Lưu file chuẩn hóa ---
+    df_customers.to_csv(OUTPUT_DIR / "customers_clean.csv", index=False)
+    df_depots.to_csv(OUTPUT_DIR / "depots_clean.csv", index=False)
+    df_vehicles.to_csv(OUTPUT_DIR / "vehicles_clean.csv", index=False)
+    df_roads_full.to_csv(OUTPUT_DIR / "roads_clean.csv", index=False)
 
+    print(f"💾 Đã lưu 4 file dữ liệu chuẩn hóa vào thư mục: {OUTPUT_DIR}")
+    print("📂 Bao gồm: customers_clean.csv, depots_clean.csv, vehicles_clean.csv, roads_clean.csv")
     return df_customers, df_depots, df_vehicles, df_roads_full
 
 
+if __name__ == "__main__":
+    load_data()
 
 def build_cost_lookup(df_roads_full, df_depots, df_customers, mode="time"):
     """
