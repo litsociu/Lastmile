@@ -9,5 +9,8 @@
         <module name="java_optimizer" />
       </profile>
     </annotationProcessing>
+    <bytecodeTargetLevel>
+      <module name="teamate_model" target="17" />
+    </bytecodeTargetLevel>
   </component>
 </project>
