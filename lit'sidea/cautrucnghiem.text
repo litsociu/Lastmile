@@ -1,0 +1,24 @@
+solution = {
+    "routes": {    # mỗi xe k có một route
+        k1: [d_k, i1, i2, ..., d_k],
+        k2: [d_k, j1, j2, ..., d_k],
+        ...
+    },
+    # optional: danh sách khách toàn cục, để dễ kiểm unserved
+    "all_customers": set_of_all_customer_ids
+}
+distance[i][j]        # d_{i,j}
+travel_time[i][j]     # t_{i,j}
+demand_w[i], demand_v[i]         # q_i^w, q_i^v
+service_time[i]                   # s_i
+tw_start[i], tw_end[i]            # e_i, l_i
+vehicle_cap_w[k], vehicle_cap_v[k]   # Q_k^w, Q_k^v
+shift_max[k]                      # τ_k^{max}
+fixed_cost[k]                     # α_k
+var_cost[k]                       # β_k
+penalty_unserved[i]               # P_i
+lambda_E[i], lambda_L[i]          # λ_i^E, λ_i^L
+lambda_H[k]                       # λ_k^H
+lambda_W                          # λ^W
+road_allowed[k][i][j]             # ρ_{i,j}^k ∈ {0,1}
+BIG_CAP, BIG_ROAD                 # hệ số phạt rất lớn cho capacity/road (hard-ish)
