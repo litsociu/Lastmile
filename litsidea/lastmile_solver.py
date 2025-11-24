@@ -22,6 +22,7 @@ import pandas as pd
 import math
 import random
 import glob
+import os
 
 # ============================================================
 # 1. DATA STRUCTURES
@@ -783,6 +784,9 @@ def alns(
         # cooling
         alpha = it / max_iter
         temperature = start_temperature * (1 - alpha) + end_temperature * alpha
+    for it in range(1, max_iter + 1):
+        if it % 50 == 0:
+            print(f"[ALNS] Iteration {it}, current obj = {current.objective:.2f}, best = {best.objective:.2f}")
 
     return best
 
@@ -923,13 +927,45 @@ def tabu_search(
 # 8. LOAD DATA & EXAMPLE RUN
 # ============================================================
 
-def load_data():
-    customers_df = pd.read_excel("/mnt/data/customers_vietnam.xlsx")
-    depots_df = pd.read_excel("/mnt/data/depots_vietnam.xlsx")
-    vehicles_df = pd.read_excel("/mnt/data/vehicles_vietnam.xlsx")
+import os
+import glob
+import pandas as pd
 
-    road_files = glob.glob("/mnt/data/roads_*.csv")
-    roads_df = pd.concat([pd.read_csv(f) for f in road_files], ignore_index=True)
+def load_data():
+    # Thư mục chứa file lastmile_solver.py
+    this_dir = os.path.dirname(os.path.abspath(__file__))
+
+    # Thư mục gốc project
+    project_root = os.path.dirname(this_dir)
+
+    # Đường dẫn tới thư mục data thật sự
+    data_root = os.path.join(project_root, "Zzz_data", "LMDO data_3i")
+
+    # File Excel
+    customers_path = os.path.join(data_root, "customers_vietnam.xlsx")
+    depots_path    = os.path.join(data_root, "depots_vietnam.xlsx")
+    vehicles_path  = os.path.join(data_root, "vehicles_vietnam.xlsx")
+
+    # File roads trong dạng nhiều folder con
+    roads_pattern = os.path.join(data_root, "roads", "**", "roads_*.csv")
+    road_files = glob.glob(roads_pattern, recursive=True)
+
+    print("=== DEBUG PATH ===")
+    print("data_root:", data_root)
+    print("Looking for roads pattern:", roads_pattern)
+    print("Found roads:", len(road_files))
+
+    for f in road_files:
+        print("  -", f)
+
+    if not road_files:
+        raise FileNotFoundError("Không tìm thấy bất kỳ file roads_*.csv nào!")
+
+    customers_df = pd.read_excel(customers_path)
+    depots_df    = pd.read_excel(depots_path)
+    vehicles_df  = pd.read_excel(vehicles_path)
+    roads_df     = pd.concat([pd.read_csv(f) for f in road_files], ignore_index=True)
+
     return customers_df, depots_df, vehicles_df, roads_df
 
 def build_initial_solution(inst: Instance) -> Solution:
@@ -989,6 +1025,21 @@ def example_run_tabu(prefix: str = "D001"):
     return best
 
 if __name__ == "__main__":
-    # chạy demo cho D001 (HCM)
-    example_run_alns("D001")
-    example_run_tabu("D001")
+    import traceback
+
+    print(">>> BẮT ĐẦU CHẠY ALNS D001")
+    try:
+        best_alns = example_run_alns("D001")
+        print(">>> ALNS D001 DONE, OBJ =", best_alns.objective)
+    except Exception as e:
+        print(">>> LỖI KHI CHẠY ALNS D001:", e)
+        traceback.print_exc()
+
+    print("\n>>> BẮT ĐẦU CHẠY TABU D001")
+    try:
+        best_tabu = example_run_tabu("D001")
+        print(">>> TABU D001 DONE, OBJ =", best_tabu.objective)
+    except Exception as e:
+        print(">>> LỖI KHI CHẠY TABU D001:", e)
+        traceback.print_exc()
+
