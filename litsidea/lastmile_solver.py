@@ -381,6 +381,9 @@ def evaluate(sol: Solution, inst: Instance) -> float:
 
         for i, j in zip(stops[:-1], stops[1:]):
             # road restriction
+        # CHỈ phạt khi ta biết rõ cung (i,j) TỒN TẠI và BỊ CẤM cho xe vid
+            allowed_for_vid = inst.road_allowed.get(vid, {})
+            allow_ij = allowed_for_vid.get(i, {}).get(j, 1)  # mặc định = 1 (cho phép)
             if inst.road_allowed[vid].get(i, {}).get(j, 0) == 0:
                 total_road_pen += inst.BIG_ROAD
 
