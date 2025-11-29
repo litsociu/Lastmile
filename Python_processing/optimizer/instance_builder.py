@@ -15,10 +15,6 @@ def build_instance_for_depot_prefix(
     vehicles_df: pd.DataFrame,
     roads_df: pd.DataFrame,
 ) -> Instance:
-    """
-    Xây dựng một Instance cho một depot_prefix (ví dụ 'D001').
-    Giữ nguyên logic từ code gốc, chỉ tách ra thành module riêng.
-    """
 
     # VEHICLES
     veh_sub = vehicles_df[vehicles_df["Start_Depot_ID"].str.startswith(depot_prefix)].copy()
@@ -34,27 +30,33 @@ def build_instance_for_depot_prefix(
     if roads_sub.empty:
         raise ValueError(f"Không có roads cho prefix {depot_prefix}")
 
-    dest_nodes: Set[str] = set(roads_sub["Destination_Node_ID"].unique())
-    all_customer_ids: Set[str] = set(customers_df["Customer_ID"].unique())
+    dest_nodes = set(roads_sub["Destination_Node_ID"].unique())
+    all_customer_ids = set(customers_df["Customer_ID"].unique())
 
+    # Thử intersection như cũ
     intersection = dest_nodes & all_customer_ids
+
     if intersection:
+        # Case dữ liệu gốc: roads đã có đầy đủ Cxxxxx
         customers_in_instance = intersection
     else:
+        # Case clustered: roads không biết các Pxxx -> dùng toàn bộ customers,
+        # distance & time sẽ fallback sang geo_distance trong evaluate()
         print("[WARN] roads không chứa Customer_ID nào; dùng toàn bộ customers từ file customers.")
         customers_in_instance = all_customer_ids
 
     cust_sub = customers_df[customers_df["Customer_ID"].isin(customers_in_instance)].copy()
 
+
     # CUSTOMER PARAMS
-    demand_w: Dict[str, float] = {}
-    demand_v: Dict[str, float] = {}
-    service_time: Dict[str, float] = {}
-    tw_start: Dict[str, float] = {}
-    tw_end: Dict[str, float] = {}
-    priority_map: Dict[str, int] = {}
-    delivery_type: Dict[str, str] = {}
-    coords: Dict[str, Tuple[float, float]] = {}
+    demand_w = {}
+    demand_v = {}
+    service_time = {}
+    tw_start = {}
+    tw_end = {}
+    priority_map = {}
+    delivery_type = {}
+    coords = {}
 
     for _, r in cust_sub.iterrows():
         cid = r["Customer_ID"]
@@ -67,24 +69,24 @@ def build_instance_for_depot_prefix(
         delivery_type[cid] = str(r["Delivery_Type"])
         coords[cid] = (float(r["Latitude"]), float(r["Longitude"]))
 
-    # DEPOTS
+    # --- Depot params + coords ---
     depots_sub = depots_df[depots_df["Depot_ID"].str.startswith(depot_prefix)].copy()
     depot_capacity = {r["Depot_ID"]: float(r["Capacity_Storage"]) for _, r in depots_sub.iterrows()}
 
-    depot_coords: Dict[str, Tuple[float, float]] = {}
+    depot_coords = {}
     for _, r in depots_sub.iterrows():
         d_id = r["Depot_ID"]
         lat = float(r["Latitude"])
         lon = float(r["Longitude"])
         depot_coords[d_id] = (lat, lon)
-        coords[d_id] = (lat, lon)
+        coords[d_id] = (lat, lon)   # ⭐ thêm dòng này
 
     # VEHICLE PARAMS
     vehicle_cap_w = {r["Vehicle_ID"]: float(r["Capacity_Weight"]) for _, r in veh_sub.iterrows()}
     vehicle_cap_v = {r["Vehicle_ID"]: float(r["Capacity_Volume"]) for _, r in veh_sub.iterrows()}
     fixed_cost = {r["Vehicle_ID"]: float(r["Fixed_Cost"]) for _, r in veh_sub.iterrows()}
-    var_cost = {r["Vehicle_ID"]: float(r["Variable_Cost"]) for _, r in veh_sub.iterrows()}
-    shift_max = {r["Vehicle_ID"]: float(r["Max_Working_Hours"]) * 60 for _, r in veh_sub.iterrows()}
+    var_cost   = {r["Vehicle_ID"]: float(r["Variable_Cost"]) for _, r in veh_sub.iterrows()}
+    shift_max  = {r["Vehicle_ID"]: float(r["Max_Working_Hours"])*60 for _, r in veh_sub.iterrows()}
     vehicle_type = {r["Vehicle_ID"]: str(r["Vehicle_Type"]) for _, r in veh_sub.iterrows()}
 
     # DISTANCE / TIME MATRIX
@@ -101,6 +103,7 @@ def build_instance_for_depot_prefix(
     roads_sub["Road_Restrictions"] = roads_sub["Road_Restrictions"].fillna("None").astype(str)
 
     road_allowed = {vid: defaultdict(dict) for vid in vehicle_ids}
+
     for _, r in roads_sub.iterrows():
         i = r["Origin_Node_ID"]
         j = r["Destination_Node_ID"]
@@ -112,12 +115,11 @@ def build_instance_for_depot_prefix(
                 allow = 0
             road_allowed[vid][i][j] = allow
 
-    # CLUSTERING: gán khách về depot gần nhất
-    customer_cluster: Dict[str, str] = {}
+    # CLUSTERING (depot gần nhất)
+    customer_cluster = {}
     for cid in customers_in_instance:
         clat, clon = coords[cid]
-        best_d = None
-        best_dis = float("inf")
+        best_d, best_dis = None, float("inf")
         for did, (dlat, dlon) in depot_coords.items():
             d = geo_distance(clat, clon, dlat, dlon)
             if d < best_dis:
@@ -125,24 +127,52 @@ def build_instance_for_depot_prefix(
                 best_d = did
         customer_cluster[cid] = best_d
 
-    # PENALTIES
+            # ==============================
+    # PENALTIES / WEIGHTS TINH CHỈNH
+    # ==============================
+
     penalty_unserved: Dict[str, float] = {}
     lambda_E: Dict[str, float] = {}
     lambda_L: Dict[str, float] = {}
+
     for cid in customers_in_instance:
-        phi = priority_map[cid]
-        penalty_unserved[cid] = 2e5 * phi * max(demand_w[cid], 1)
-        lambda_E[cid] = 0.1 * phi
-        lambda_L[cid] = 2.0 * phi
+        phi = priority_map[cid]            # 1,2,3 (priority)
+        w_i = max(demand_w[cid], 1.0)
 
-    lambda_H = {vid: 0.1 * fixed_cost[vid] for vid in vehicle_ids}
-    lambda_W = 1e-4
-    lambda_dist_overtime = 5.0
-    lambda_depot_capacity = 1.0
+        # Phạt không phục vụ:
+        # - Cực kỳ lớn so với các thành phần khác, để model cố gắng phục vụ
+        #   khách trước khi tối ưu chi phí đường.
+        penalty_unserved[cid] = 1e5 * phi * w_i
 
-    BIG_CAP = 1e4
-    BIG_ROAD = 1e4
+        # Phạt đến sớm / trễ:
+        # - early nhẹ, cho phép chờ.
+        # - late mạnh hơn nhiều, nhưng không quá điên.
+        lambda_E[cid] = 0.05 * phi   # đến sớm
+        lambda_L[cid] = 1.0  * phi   # đến trễ
 
+    # Phạt overtime (vượt ca làm việc):
+    # - tỉ lệ 0.05 * fixed_cost, nhỏ hơn rất nhiều so với unserved.
+    lambda_H = {vid: 0.05 * fixed_cost[vid] for vid in vehicle_ids}
+
+    # Workload balancing:
+    # - hơi tăng lên một chút để khuyến khích chia tải đều,
+    #   nhưng vẫn nhỏ so với chi phí distance.
+    lambda_W = 5e-4
+
+    # Phạt vượt quãng đường tối đa của xe:
+    lambda_dist_overtime = 2.0
+
+    # Phạt vượt sức chứa kho (theo weight):
+    lambda_depot_capacity = 0.5
+
+    # hard-ish penalties:
+    # - đủ to để ALNS/TR tabu tránh nghiệm xấu, nhưng không "giết" mọi candidate.
+    BIG_CAP = 5e3
+    BIG_ROAD = 5e3
+
+# Một khách không được phục vụ rất đắt.
+
+# Vi phạm capacity/road/overtime có phạt, nhưng nhỏ hơn nhiều → ALNS dám nhận nghiệm có khách.
     return Instance(
         customers=customers_in_instance,
         vehicles=vehicle_ids,

@@ -23,7 +23,7 @@ class Instance:
     tw_end: Dict[str, float]
     priority: Dict[str, int]
     delivery_type: Dict[str, str]
-    coords: Dict[str, Tuple[float, float]]
+    coords: Dict[str, Tuple[float,float]]
     customer_cluster: Dict[str, str]
 
     vehicle_cap_w: Dict[str, float]

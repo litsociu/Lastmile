@@ -20,6 +20,8 @@ import pandas as pd
 import math
 import random
 import os
+import datetime 
+
 
 # ============================================================
 # 1. DATA STRUCTURES
@@ -1451,6 +1453,75 @@ def print_solution_summary(sol: Solution, inst: Instance, title: str = ""):
             break
         print(f"  Route {vid}: length {len(r.stops)}")
         print("    ", r.stops[:12], "...")
+        
+# ============================================================
+# 13. EXPORT SOLUTION TO EXCEL
+# ============================================================
+
+def get_output_dir() -> str:
+    """
+    Tạo (nếu chưa có) folder OUTPUT nằm cùng thư mục với file .py hiện tại.
+    VD: /Users/.../Python_processing/optimizer/OUTPUT
+    """
+    base_dir = os.path.dirname(os.path.abspath(__file__))
+    out_dir = os.path.join(base_dir, "OUTPUT")
+    os.makedirs(out_dir, exist_ok=True)
+    return out_dir
+
+
+def export_solution_to_excel(sol: Solution, inst: Instance, run_name: str = "lan1_opt"):
+    """
+    Ghi nghiệm ra file Excel:
+    - Sheet 1: routes (từng điểm dừng theo thứ tự)
+    - Sheet 2: components (các thành phần objective)
+    Tên file: <run_name>_năm-tháng-ngày__giờhphút.xlsx
+    """
+    # Đảm bảo meta đã tính đầy đủ
+    evaluate(sol, inst)
+
+    out_dir = get_output_dir()
+
+    # Tạo timestamp kiểu: 2025-02-14__21h37
+    ts = datetime.datetime.now().strftime("%Y-%m-%d__%Hh%M")
+    filename = f"{run_name}_{ts}.xlsx"
+    out_path = os.path.join(out_dir, filename)
+
+    # --------- Sheet 1: Routes chi tiết ---------
+    rows = []
+    for vid, route in sol.routes.items():
+        depot_id = inst.depots.get(vid, "")
+        for idx, node in enumerate(route.stops):
+            is_customer = int(node in inst.customers)
+            demand_w = inst.demand_w.get(node, 0.0)
+            demand_v = inst.demand_v.get(node, 0.0)
+            lat, lon = inst.coords.get(node, (None, None))
+            cluster = inst.customer_cluster.get(node, None)
+
+            rows.append({
+                "Vehicle_ID": vid,
+                "Stop_Order": idx,
+                "Node_ID": node,
+                "Is_Customer": is_customer,
+                "Depot_of_Vehicle": depot_id,
+                "Demand_Weight": demand_w,
+                "Demand_Volume": demand_v,
+                "Latitude": lat,
+                "Longitude": lon,
+                "Cluster/Depot_Assigned": cluster,
+            })
+
+    routes_df = pd.DataFrame(rows)
+
+    # --------- Sheet 2: Objective components ---------
+    comps = sol.meta.get("components", {})
+    comp_df = pd.DataFrame([comps])
+
+    # Ghi ra Excel với 2 sheet
+    with pd.ExcelWriter(out_path, engine="xlsxwriter") as writer:
+        routes_df.to_excel(writer, sheet_name="routes", index=False)
+        comp_df.to_excel(writer, sheet_name="objective_components", index=False)
+
+    print(f"[OUTPUT] Đã ghi file kết quả: {out_path}")
 
 
 if __name__ == "__main__":
@@ -1467,6 +1538,9 @@ if __name__ == "__main__":
         print("\n>>> TABU D001")
         sol_tabu = example_run_tabu(inst, sol_alns)
         print(">>> DONE TABU:", sol_tabu.objective)
+        export_solution_to_excel(sol_alns, inst, run_name="alns_opt")
+        export_solution_to_excel(sol_tabu, inst, run_name="tabu_opt")
+
 
     except Exception as e:
         traceback.print_exc()
