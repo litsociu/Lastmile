@@ -332,13 +332,15 @@ def build_instance_for_depot_prefix(
 
 def evaluate(sol: Solution, inst: Instance) -> float:
     """
-    Evaluate a solution with complete hardening:
-    - Detect malformed routes
-    - Limit penalty accumulation
-    - Faster and safe ALNS evaluation
+    Hàm mục tiêu mở rộng:
+    f = f1 + f2
+        + penalty_unserved
+        + penalty TW (early/late)
+        + penalty overtime (thời lượng > tau_k^max)
+        + penalty max distance (distance > L_k^max)
+        + penalty depot capacity (sum q_i^w > eta_d)
+        + penalty workload balance.
     """
-
-    # 1. Initialize component costs
     total_fixed = 0.0
     total_dist_cost = 0.0
     total_unserved_pen = 0.0
@@ -350,120 +352,99 @@ def evaluate(sol: Solution, inst: Instance) -> float:
     total_depot_cap_pen = 0.0
     total_workload_pen = 0.0
 
-    visited = set()
-    W = {}
-    depot_load = defaultdict(float)
+    visited: Set[str] = set()
+    W: Dict[str, float] = {}         # distance per vehicle
+    depot_load: Dict[str, float] = defaultdict(float)  # sum q_i^w per depot
 
-    # ------------------------------------------------------------------
-    # 2. Evaluate each vehicle route
-    # ------------------------------------------------------------------
     for vid, route in sol.routes.items():
         stops = route.stops
-
-        # If route is missing, empty or malformed
-        if not stops or len(stops) < 2:
+        if not stops or len(stops) <= 1:
             W[vid] = 0.0
             continue
-        
-        # Fixed cost
+
+        # fixed cost if vehicle used (has >1 stops)
         total_fixed += inst.fixed_cost.get(vid, 0.0)
 
         load_w = 0.0
         load_v = 0.0
         t = 0.0
         dist_k = 0.0
+
         depot_id = inst.depots.get(vid, None)
 
-        route_invalid = False
-        
-        # Iterate each arc
+        # iterate edges
+        invalid_route_encountered = False
         for i, j in zip(stops[:-1], stops[1:]):
-
+            # check road_allowed explicitly
             allowed = inst.road_allowed.get(vid, {}).get(i, {}).get(j, 1)
-            d_ij = inst.distance.get(i, {}).get(j)
-            t_ij = inst.travel_time.get(i, {}).get(j)
+            d_ij = inst.distance.get(i, {}).get(j, None)
+            t_ij = inst.travel_time.get(i, {}).get(j, None)
 
-            if (not allowed) or (d_ij is None) or (t_ij is None):
-                # Penalize once for invalid arc
+            if not allowed or d_ij is None or t_ij is None:
+                # nghiêm trọng: cung không tồn tại hoặc bị cấm cho xe này
                 total_road_pen += inst.BIG_ROAD
-                route_invalid = True
+                # Dừng route ở đây: không tiếp tục xử lý các stops sau (không xem là visited)
+                invalid_route_encountered = True
                 break
 
             dist_k += d_ij
             t += t_ij
 
+            # if j is a customer
             if j in inst.customers:
-
-                # load
                 load_w += inst.demand_w.get(j, 0.0)
                 load_v += inst.demand_v.get(j, 0.0)
 
-                # capacity (only penalize once per violation)
-                cap_w = inst.vehicle_cap_w.get(vid, float("inf"))
-                cap_v = inst.vehicle_cap_v.get(vid, float("inf"))
+                # capacity (hard-ish) - vehicle capacities
+                if load_w > inst.vehicle_cap_w.get(vid, float("inf")):
+                    total_cap_pen += inst.BIG_CAP * (load_w - inst.vehicle_cap_w.get(vid, 1.0)) / max(inst.vehicle_cap_w.get(vid, 1.0), 1.0)
+                if load_v > inst.vehicle_cap_v.get(vid, float("inf")):
+                    total_cap_pen += inst.BIG_CAP * (load_v - inst.vehicle_cap_v.get(vid, 1.0)) / max(inst.vehicle_cap_v.get(vid, 1.0), 1.0)
 
-                if load_w > cap_w:
-                    total_cap_pen += inst.BIG_CAP
-                if load_v > cap_v:
-                    total_cap_pen += inst.BIG_CAP
-
-                # soft TW
-                a_j = t
-                E = inst.tw_start.get(j, 0.0)
-                L = inst.tw_end.get(j, 24*60)
-
-                if a_j < E:
-                    total_tw_pen += inst.lambda_E.get(j, 0.0) * (E - a_j)
-                elif a_j > L:
-                    total_tw_pen += inst.lambda_L.get(j, 0.0) * (a_j - L)
+                # time window soft
+                a_j = t  # arrival
+                E_j = max(inst.tw_start.get(j, 0.0) - a_j, 0.0)
+                L_j = max(a_j - inst.tw_end.get(j, 24*60), 0.0)
+                total_tw_pen += inst.lambda_E.get(j, 0.0) * E_j + inst.lambda_L.get(j, 0.0) * L_j
 
                 # service time
                 t += inst.service_time.get(j, 0.0)
 
                 visited.add(j)
-                if depot_id:
+                if depot_id is not None:
                     depot_load[depot_id] += inst.demand_w.get(j, 0.0)
 
-        # Save travel distance
+        # if route invalid encountered, we treat the route as ended at the last valid node:
         W[vid] = dist_k
         total_dist_cost += inst.var_cost.get(vid, 0.0) * dist_k
 
-        # Overtime
-        max_shift = inst.shift_max.get(vid, float("inf"))
-        if t > max_shift:
-            total_overtime_pen += inst.lambda_H.get(vid, 0.0) * (t - max_shift)
+        # overtime
+        overtime = max(t - inst.shift_max.get(vid, float("inf")), 0.0)
+        if overtime > 0:
+            total_overtime_pen += inst.lambda_H.get(vid, 0.0) * overtime
 
-        # Max distance
-        limit_dist = inst.max_distance.get(vid, float("inf"))
-        if dist_k > limit_dist:
-            total_dist_over_pen += inst.lambda_dist_overtime * (dist_k - limit_dist)
+        # max distance
+        if dist_k > inst.max_distance.get(vid, float("inf")):
+            extra = dist_k - inst.max_distance.get(vid, 0.0)
+            total_dist_over_pen += inst.lambda_dist_overtime * extra
 
-    # ------------------------------------------------------------------
-    # 3. Unserved customers
-    # ------------------------------------------------------------------
+    # unserved penalty for customers not in visited
     for cid in inst.customers:
         if cid not in visited:
             total_unserved_pen += inst.penalty_unserved.get(cid, 0.0)
 
-    # ------------------------------------------------------------------
-    # 4. Depot capacity
-    # ------------------------------------------------------------------
+    # depot capacity
     for d_id, load in depot_load.items():
         cap = inst.depot_capacity.get(d_id, float("inf"))
         if load > cap:
             total_depot_cap_pen += inst.lambda_depot_capacity * (load - cap)
 
-    # ------------------------------------------------------------------
-    # 5. Workload balance
-    # ------------------------------------------------------------------
+    # workload balance
     if W:
         avgW = sum(W.values()) / len(W)
         for vid in W:
             total_workload_pen += inst.lambda_W * (W[vid] - avgW) ** 2
 
-    # ------------------------------------------------------------------
-    # 6. Total objective
-    # ------------------------------------------------------------------
     F = (
         total_fixed
         + total_dist_cost
@@ -481,10 +462,21 @@ def evaluate(sol: Solution, inst: Instance) -> float:
     sol.meta = {
         "visited": visited,
         "W": W,
-        "depot_load": depot_load
+        "depot_load": depot_load,
+        "components": {
+            "fixed": total_fixed,
+            "distance_cost": total_dist_cost,
+            "unserved_pen": total_unserved_pen,
+            "tw_pen": total_tw_pen,
+            "overtime_pen": total_overtime_pen,
+            "capacity_pen": total_cap_pen,
+            "road_pen": total_road_pen,
+            "dist_over_pen": total_dist_over_pen,
+            "depot_cap_pen": total_depot_cap_pen,
+            "workload_pen": total_workload_pen,
+        }
     }
     return F
-
 
 # ============================================================
 # 5. ALNS: DESTROY / REPAIR OPERATORS

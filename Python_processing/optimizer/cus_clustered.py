@@ -5,7 +5,7 @@ import math
 import os
 
 # ========= CONFIG =========
-BASE_DIR = "/Users/alicecin/Documents/Lastmile/Zzz_data/LMDO processed/Ho_Chi_Minh_City"
+BASE_DIR = "D:\LogChaLan\Lastmile-1\Python_processing\optimizer"
 
 INPUT_CUSTOMERS = os.path.join(BASE_DIR, "customers.xlsx")            # file gốc
 INPUT_VEHICLES = os.path.join(BASE_DIR, "vehicles.xlsx")              # để đọc capacity
@@ -248,5 +248,52 @@ pickup_df.to_excel(OUTPUT_CUSTOMERS, index=False)
 mapping_path = os.path.join(BASE_DIR, "customer_to_pickup_mapping.xlsx")
 mapping_df.to_excel(mapping_path, index=False)
 print("Ghi mapping gốc -> pickup:", mapping_path)
+
+print("DONE.")
+
+#Vẽ hình phân cụm
+
+pickup_df = pd.DataFrame(pickup_rows)
+mapping_df = pd.DataFrame(mapping_rows)
+
+print("Số pickup nodes sau khi split:", len(pickup_df))
+print(pickup_df[["Customer_ID", "Order_Weight"]].describe())
+
+# === IN SƠ ĐỒ PHÂN CỤM DẠNG TEXT ===
+print("\n=== Sơ đồ phân cụm (Pickup node -> các Customer gốc) ===")
+for pickup_id, group in mapping_df.groupby("Pickup_ID"):
+    customers_in_pickup = group["Customer_ID"].tolist()
+    print(f"{pickup_id}: {len(customers_in_pickup)} customers -> {customers_in_pickup[:10]}", end="")
+    if len(customers_in_pickup) > 10:
+        print(f" ... (+{len(customers_in_pickup) - 10} nữa)")
+    else:
+        print("")
+
+print(f"Ghi ra file {OUTPUT_CUSTOMERS} ...")
+pickup_df.to_excel(OUTPUT_CUSTOMERS, index=False)
+
+mapping_path = os.path.join(BASE_DIR, "customer_to_pickup_mapping.xlsx")
+mapping_df.to_excel(mapping_path, index=False)
+print("Ghi mapping gốc -> pickup:", mapping_path)
+
+# === VẼ SƠ ĐỒ PHÂN CỤM (HÌNH) ===
+import matplotlib.pyplot as plt
+
+plt.figure(figsize=(10, 8))
+plt.scatter(df["Longitude"], df["Latitude"],
+            c=df["cluster_id"], s=5, alpha=0.5, label="Original customers")
+plt.scatter(pickup_df["Longitude"], pickup_df["Latitude"],
+            s=50, marker="x", c="red", label="Pickup nodes")
+
+plt.xlabel("Longitude")
+plt.ylabel("Latitude")
+plt.title(f"KMeans clustering + capacity split (K={N_CLUSTERS})")
+plt.legend()
+plt.tight_layout()
+
+plot_path = os.path.join(BASE_DIR, "cluster_map.png")
+plt.savefig(plot_path, dpi=200)
+plt.close()
+print("Đã vẽ sơ đồ phân cụm lưu tại:", plot_path)
 
 print("DONE.")
