@@ -5,7 +5,9 @@ from collections import defaultdict
 from typing import Dict, Set, Any, List, Tuple, Callable
 import math
 import random
-
+import datetime
+import os
+import pandas as pd
 from data_model import Instance, Route, Solution
 from utils import geo_distance
 from evaluation import evaluate  # nếu bạn đã tách evaluate riêng
@@ -229,14 +231,12 @@ from evaluation import evaluate  # nếu bạn đã tách evaluate riêng
 DestroyOp = Callable[[Solution, Instance, random.Random], Solution]
 RepairOp = Callable[[Solution, Instance, random.Random], Solution]
 
-
 @dataclass
 class OperatorState:
     name: str
     weight: float = 1.0
     score: float = 0.0
     times_used: int = 0
-
 
 def roulette_select(ops: List[OperatorState], rng: random.Random) -> int:
     total_w = sum(max(op.weight, 1e-6) for op in ops)
@@ -248,6 +248,7 @@ def roulette_select(ops: List[OperatorState], rng: random.Random) -> int:
             return i
     return len(ops) - 1
 
+# ---------- DESTROY OPERATORS ----------
 
 def _fix_route_roundtrip(route: Route):
     """Đảm bảo route luôn dạng [depot, ..., depot]."""
@@ -259,10 +260,10 @@ def _fix_route_roundtrip(route: Route):
     if len(route.stops) == 1:
         route.stops.append(depot)
 
-
-# ---------- DESTROY OPERATORS ----------
-
 def destroy_random(sol: Solution, inst: Instance, rng: random.Random, remove_ratio=0.1) -> Solution:
+    """
+    Destroy: remove ngẫu nhiên một tỉ lệ khách hàng khỏi tất cả route.
+    """
     new_sol = sol.copy()
     allc = list(inst.customers)
     rng.shuffle(allc)
@@ -282,13 +283,16 @@ def destroy_random(sol: Solution, inst: Instance, rng: random.Random, remove_rat
         _fix_route_roundtrip(r)
     return new_sol
 
-
 def destroy_cluster(sol: Solution, inst: Instance, rng: random.Random) -> Solution:
+    """
+    Destroy theo cluster: chọn 1 cluster (depot) và xoá tất cả khách thuộc cluster đó.
+    """
     new_sol = sol.copy()
     clusters = set(inst.customer_cluster.values())
     if not clusters:
         return new_sol
     chosen_cluster = rng.choice(list(clusters))
+
     to_remove = {cid for cid, cl in inst.customer_cluster.items() if cl == chosen_cluster}
 
     for r in new_sol.routes.values():
@@ -302,10 +306,13 @@ def destroy_cluster(sol: Solution, inst: Instance, rng: random.Random) -> Soluti
             new_stops.append(depot)
         r.stops = new_stops
         _fix_route_roundtrip(r)
+
     return new_sol
 
-
 def destroy_shaw_related(sol: Solution, inst: Instance, rng: random.Random, remove_count: int = 20) -> Solution:
+    """
+    Shaw removal: remove nhóm khách 'liên quan' (gần nhau, TW gần nhau, priority giống).
+    """
     new_sol = sol.copy()
     allc = list(inst.customers)
     if not allc:
@@ -345,6 +352,7 @@ def destroy_shaw_related(sol: Solution, inst: Instance, rng: random.Random, remo
             new_stops.append(depot)
         r.stops = new_stops
         _fix_route_roundtrip(r)
+
     return new_sol
 
 
@@ -352,7 +360,12 @@ def destroy_shaw_related(sol: Solution, inst: Instance, rng: random.Random, remo
 
 def insertion_cost_distance_only(route: Route, vid: str, cid: str, pos: int, inst: Instance) -> float:
     """
-    Ước lượng cost chèn cid vào route.stops tại vị trí pos (chỉ theo distance).
+    Ước lượng chi phí chèn cid vào route.stops tại vị trí pos (chỉ theo distance).
+    Route: [n0, n1, ..., nk]
+    Chèn giữa stops[pos-1] -> cid -> stops[pos].
+
+    - Không bao giờ trả về NaN (nếu thiếu dữ liệu roads thì dùng geo_distance,
+      nếu vẫn có vấn đề thì trả 0.0).
     """
     stops = route.stops
     if not stops:
@@ -363,16 +376,21 @@ def insertion_cost_distance_only(route: Route, vid: str, cid: str, pos: int, ins
     dist = inst.distance
 
     def get_dist(a: str, b: str) -> float:
+        # 1) thử trong ma trận roads
         d = dist.get(a, {}).get(b, None)
         if d is None:
             d = dist.get(b, {}).get(a, None)
+
+        # 2) nếu không có trong roads -> dùng geo_distance nếu có toạ độ
         if d is None:
             if a in inst.coords and b in inst.coords:
                 lat1, lon1 = inst.coords[a]
                 lat2, lon2 = inst.coords[b]
                 d = geo_distance(lat1, lon1, lat2, lon2)
             else:
-                d = 0.0
+                d = 0.0  # không có info gì thì tạm cho 0
+
+        # 3) chống NaN / Inf
         if isinstance(d, float) and (math.isnan(d) or math.isinf(d)):
             return 0.0
         return float(d)
@@ -381,6 +399,7 @@ def insertion_cost_distance_only(route: Route, vid: str, cid: str, pos: int, ins
     d_cj = 0.0
     if j is not None:
         d_cj = get_dist(cid, j)
+
     d_old = 0.0
     if j is not None:
         d_old = get_dist(i, j)
@@ -391,7 +410,9 @@ def insertion_cost_distance_only(route: Route, vid: str, cid: str, pos: int, ins
 
 def repair_greedy(sol: Solution, inst: Instance, rng: random.Random) -> Solution:
     """
-    Greedy insertion không chặn capacity cứng: vi phạm sẽ bị phạt trong evaluate().
+    Greedy insertion KHÔNG chặn capacity cứng:
+    - Cứ chèn ở chỗ tăng distance ít nhất.
+    - Vi phạm capacity sẽ bị phạt trong evaluate() qua BIG_CAP.
     """
     new_sol = sol.copy()
     evaluate(new_sol, inst)
@@ -407,6 +428,7 @@ def repair_greedy(sol: Solution, inst: Instance, rng: random.Random) -> Solution
           ", len(served) =", len(served),
           ", len(unserved) =", len(unserved))
 
+    # Tính tổng tải (w,v) trên từng route hiện tại
     route_load_w = {}
     route_load_v = {}
     for vid, route in new_sol.routes.items():
@@ -420,6 +442,7 @@ def repair_greedy(sol: Solution, inst: Instance, rng: random.Random) -> Solution
         route_load_v[vid] = v
 
     inserted = 0
+
     for cid in unserved:
         demand_w_c = inst.demand_w[cid]
         demand_v_c = inst.demand_v[cid]
@@ -429,12 +452,90 @@ def repair_greedy(sol: Solution, inst: Instance, rng: random.Random) -> Solution
         best_pos = None
 
         for vid, route in new_sol.routes.items():
+            # ❌ BỎ 2 CHECK CAPACITY Ở ĐÂY
+            # if route_load_w[vid] + demand_w_c > inst.vehicle_cap_w[vid]:
+            #     continue
+            # if route_load_v[vid] + demand_v_c > inst.vehicle_cap_v[vid]:
+            #     continue
+
             if len(route.stops) == 0:
                 continue
             if len(route.stops) == 1:
                 depot = route.stops[0]
                 route.stops.append(depot)
 
+            for pos in range(1, len(route.stops)):  # không chèn trước depot đầu
+                delta = insertion_cost_distance_only(route, vid, cid, pos, inst)
+                if delta < best_delta:
+                    best_delta = delta
+                    best_vid = vid
+                    best_pos = pos
+
+        if best_vid is not None and best_pos is not None and best_delta < float("inf"):
+            new_sol.routes[best_vid].stops.insert(best_pos, cid)
+            # cập nhật lại tải cho route đó (để sau này nếu muốn dùng info này)
+            route_load_w[best_vid] += demand_w_c
+            route_load_v[best_vid] += demand_v_c
+            inserted += 1
+
+    print(f"[repair_greedy] inserted = {inserted}")
+    return new_sol
+
+def repair_greedy_feasible(sol: Solution, inst: Instance, rng: random.Random) -> Solution:
+    """
+    Greedy insertion CÓ kiểm tra capacity cứng:
+    - Chèn khách vào chỗ tăng distance ít nhất.
+    - Chỉ chèn nếu tổng tải (w, v) trên route + khách mới
+      không vượt capacity xe đó.
+    - Hạn chế số khách chèn mỗi lần để tránh quá chậm.
+    """
+    new_sol = sol.copy()
+    evaluate(new_sol, inst)
+    served = new_sol.meta.get("visited", set())
+    unserved = list(inst.customers - served)
+    rng.shuffle(unserved)
+
+    # Có thể giới hạn số khách chèn mỗi lần để tránh quá nặng
+    MAX_INSERT = 2000
+    unserved = unserved[:MAX_INSERT]
+
+    # Tính tổng tải (w,v) trên từng route hiện tại
+    route_load_w = {}
+    route_load_v = {}
+    for vid, route in new_sol.routes.items():
+        w = 0.0
+        v = 0.0
+        for node in route.stops:
+            if node in inst.customers:
+                w += inst.demand_w[node]
+                v += inst.demand_v[node]
+        route_load_w[vid] = w
+        route_load_v[vid] = v
+
+    inserted = 0
+
+    for cid in unserved:
+        demand_w_c = inst.demand_w[cid]
+        demand_v_c = inst.demand_v[cid]
+
+        best_delta = float("inf")
+        best_vid = None
+        best_pos = None
+
+        for vid, route in new_sol.routes.items():
+            # ✅ CHECK CAPACITY CỨNG
+            if route_load_w[vid] + demand_w_c > inst.vehicle_cap_w[vid]:
+                continue
+            if route_load_v[vid] + demand_v_c > inst.vehicle_cap_v[vid]:
+                continue
+
+            if len(route.stops) == 0:
+                continue
+            if len(route.stops) == 1:
+                depot = route.stops[0]
+                route.stops.append(depot)
+
+            # Chỉ chèn sau depot đầu (pos >= 1)
             for pos in range(1, len(route.stops)):
                 delta = insertion_cost_distance_only(route, vid, cid, pos, inst)
                 if delta < best_delta:
@@ -448,11 +549,22 @@ def repair_greedy(sol: Solution, inst: Instance, rng: random.Random) -> Solution
             route_load_v[best_vid] += demand_v_c
             inserted += 1
 
-    print(f"[repair_greedy] inserted = {inserted}")
+    print(f"[repair_greedy_feasible] inserted = {inserted}")
     return new_sol
 
-
-def repair_regret(sol: Solution, inst: Instance, rng: random.Random, k_regret: int = 2) -> Solution:
+def repair_regret(
+    sol: Solution,
+    inst: Instance,
+    rng: random.Random,
+    k_regret: int = 2
+) -> Solution:
+    """
+    Regret-k insertion CÓ kiểm tra capacity cứng:
+    - Với mỗi khách chưa phục vụ, xem các vị trí chèn hợp lệ (không vượt capacity)
+      trên tất cả route.
+    - Tính 'regret' = (chi phí chèn tốt thứ k - tốt nhất).
+    - Chọn khách có regret lớn nhất để chèn vào vị trí tốt nhất của nó.
+    """
     new_sol = sol.copy()
     evaluate(new_sol, inst)
     served = new_sol.meta.get("visited", set())
@@ -460,11 +572,13 @@ def repair_regret(sol: Solution, inst: Instance, rng: random.Random, k_regret: i
     rng.shuffle(unserved)
     print("[repair_regret] start, #unserved =", len(unserved))
 
+    # Giới hạn số khách để tránh quá chậm
     MAX_INSERT = 200
     unserved = unserved[:MAX_INSERT]
 
-    route_load_w = {}
-    route_load_v = {}
+    # Tính tải ban đầu trên mỗi route
+    route_load_w: Dict[str, float] = {}
+    route_load_v: Dict[str, float] = {}
     for vid, route in new_sol.routes.items():
         w = 0.0
         v = 0.0
@@ -475,43 +589,60 @@ def repair_regret(sol: Solution, inst: Instance, rng: random.Random, k_regret: i
         route_load_w[vid] = w
         route_load_v[vid] = v
 
+    inserted_global = 0
+
     while unserved:
         best_cid = None
         best_delta_for_cid = None
         best_regret = -1.0
 
+        # Tìm khách tiếp theo để chèn (theo tiêu chí regret tối đa)
         for cid in list(unserved):
-            insertion_candidates = []
+            demand_w_c = inst.demand_w[cid]
+            demand_v_c = inst.demand_v[cid]
+
+            insertion_candidates: List[Tuple[float, str, int]] = []
 
             for vid, route in new_sol.routes.items():
+                # ✅ CHECK CAPACITY CỨNG CHO XE VID
+                if route_load_w[vid] + demand_w_c > inst.vehicle_cap_w[vid]:
+                    continue
+                if route_load_v[vid] + demand_v_c > inst.vehicle_cap_v[vid]:
+                    continue
+
                 if len(route.stops) == 0:
                     continue
                 if len(route.stops) == 1:
                     depot = route.stops[0]
                     route.stops.append(depot)
 
+                # duyệt mọi vị trí chèn hợp lệ trên route này
                 for pos in range(1, len(route.stops)):
                     delta = insertion_cost_distance_only(route, vid, cid, pos, inst)
                     if delta < float("inf"):
                         insertion_candidates.append((delta, vid, pos))
 
             if not insertion_candidates:
+                # khách này tạm thời không chèn được vào route nào -> bỏ qua
                 continue
 
             insertion_candidates.sort(key=lambda x: x[0])
             best = insertion_candidates[0][0]
+
             if len(insertion_candidates) >= k_regret:
                 second_best = insertion_candidates[k_regret - 1][0]
             else:
                 second_best = insertion_candidates[-1][0]
+
             regret = second_best - best
 
             if regret > best_regret:
                 best_regret = regret
                 best_cid = cid
-                best_delta_for_cid = insertion_candidates[0]
+                best_delta_for_cid = insertion_candidates[0]  # (best_delta, vid, pos)
 
         if best_cid is None or best_delta_for_cid is None:
+            # Không còn khách nào có vị trí chèn hợp lệ
             break
 
         delta, vid, pos = best_delta_for_cid
@@ -519,7 +650,9 @@ def repair_regret(sol: Solution, inst: Instance, rng: random.Random, k_regret: i
         route_load_w[vid] += inst.demand_w[best_cid]
         route_load_v[vid] += inst.demand_v[best_cid]
         unserved.remove(best_cid)
+        inserted_global += 1
 
+    print(f"[repair_regret] inserted = {inserted_global}")
     return new_sol
 
 
@@ -538,13 +671,14 @@ def alns(
     rng = random.Random(rng_seed)
 
     destroy_states = [OperatorState(name) for name in destroy_ops]
-    repair_states = [OperatorState(name) for name in repair_ops]
+    repair_states  = [OperatorState(name) for name in repair_ops]
 
     current = initial_solution.copy()
     evaluate(current, inst)
     best = current.copy()
 
     temperature = start_temperature
+
     print(f"[ALNS] Bắt đầu, objective initial = {current.objective:.2f}")
 
     for it in range(1, max_iter + 1):
@@ -556,7 +690,7 @@ def alns(
         d_func = destroy_ops[d_name]
         r_func = repair_ops[r_name]
 
-        partial = d_func(current.copy(), inst, rng)
+        partial   = d_func(current.copy(), inst, rng)
         candidate = r_func(partial, inst, rng)
         F_new = evaluate(candidate, inst)
         F_cur = current.objective
@@ -575,6 +709,7 @@ def alns(
         if accept:
             current = candidate
 
+        # reward
         reward = 0.0
         if F_new < F_best:
             best = candidate.copy()
@@ -586,9 +721,10 @@ def alns(
 
         destroy_states[di].score += reward
         destroy_states[di].times_used += 1
-        repair_states[ri].score += reward
-        repair_states[ri].times_used += 1
+        repair_states[ri].score  += reward
+        repair_states[ri].times_used  += 1
 
+        # update weights
         if it % segment_length == 0:
             for op in destroy_states:
                 if op.times_used > 0:
@@ -603,15 +739,19 @@ def alns(
                     op.score = 0.0
                     op.times_used = 0
 
+        # cooling
         alpha = it / max_iter
         temperature = start_temperature * (1 - alpha) + end_temperature * alpha
 
+        # LOG vòng lặp
+                # LOG vòng lặp
         if it % 20 == 0 or it == 1 or it == max_iter:
             comps_cur = current.meta.get("components", {})
             comps_best = best.meta.get("components", {})
             print(f"[ALNS] it={it}, current={current.objective:.2f}, best={best.objective:.2f}, T={temperature:.2f}")
             print("   current components:", {k: round(v, 2) for k, v in comps_cur.items()})
             print("   best    components:", {k: round(v, 2) for k, v in comps_best.items()})
+
 
     print("[ALNS] Hoàn tất.")
     return best
@@ -627,13 +767,12 @@ class Move:
     data: Any                # detail
     attr: Tuple[Any, ...]    # tabu attribute
 
-
 def apply_move(sol: Solution, move: Move, inst: Instance) -> Solution:
     new_sol = sol.copy()
     if move.move_type == "relocate":
         cid, from_vid, from_pos, to_vid, to_pos = move.data
         r_from = new_sol.routes[from_vid]
-        r_to = new_sol.routes[to_vid]
+        r_to   = new_sol.routes[to_vid]
 
         if from_pos < len(r_from.stops) and r_from.stops[from_pos] == cid:
             r_from.stops.pop(from_pos)
@@ -652,17 +791,18 @@ def apply_move(sol: Solution, move: Move, inst: Instance) -> Solution:
 
     return new_sol
 
-
 def generate_neighbors(sol: Solution, inst: Instance, max_neighbors: int, rng: random.Random) -> List[Move]:
     moves: List[Move] = []
     veh_ids = list(sol.routes.keys())
 
+    # (vid, pos, cid) cho mọi khách
     customer_positions = []
     for vid, route in sol.routes.items():
         for pos, node in enumerate(route.stops):
             if node in inst.customers:
                 customer_positions.append((vid, pos, node))
 
+    # Relocate
     for _ in range(max_neighbors // 2):
         if not customer_positions:
             break
@@ -680,6 +820,7 @@ def generate_neighbors(sol: Solution, inst: Instance, max_neighbors: int, rng: r
         )
         moves.append(move)
 
+    # Swap
     for _ in range(max_neighbors // 2):
         if len(customer_positions) < 2:
             break
@@ -692,7 +833,6 @@ def generate_neighbors(sol: Solution, inst: Instance, max_neighbors: int, rng: r
         moves.append(move)
 
     return moves[:max_neighbors]
-
 
 def tabu_search(
     inst: Instance,
@@ -716,13 +856,14 @@ def tabu_search(
         neighbors = generate_neighbors(current, inst, max_neighbors, rng)
         best_cand = None
         best_move = None
-        best_val = float("inf")
+        best_val  = float("inf")
 
         for mv in neighbors:
             is_tabu = mv.attr in tabu and tabu[mv.attr] > 0
             cand = apply_move(current, mv, inst)
             F_new = evaluate(cand, inst)
 
+            # Aspiration
             if is_tabu and F_new >= best.objective:
                 continue
 
@@ -739,6 +880,7 @@ def tabu_search(
         if best_move is not None:
             tabu[best_move.attr] = tabu_tenure
 
+        # giảm tenure
         to_remove = []
         for a in list(tabu.keys()):
             tabu[a] -= 1
@@ -749,7 +891,7 @@ def tabu_search(
 
         if current.objective < best.objective:
             best = current.copy()
-
+        
         if it % 20 == 0 or it == 1 or it == max_iter:
             comps_cur = current.meta.get("components", {})
             comps_best = best.meta.get("components", {})
@@ -774,6 +916,7 @@ def build_initial_solution(inst: Instance) -> Solution:
 
 
 def print_solution_summary(sol: Solution, inst: Instance, title: str = ""):
+    # Đảm bảo meta đã cập nhật
     evaluate(sol, inst)
     comps = sol.meta["components"]
     visited = sol.meta["visited"]
@@ -794,6 +937,7 @@ def print_solution_summary(sol: Solution, inst: Instance, title: str = ""):
 
     print("Số khách phục vụ :", len(visited), "/", len(inst.customers))
 
+    # In thử 3 route đầu
     print("Một vài route mẫu:")
     for i, (vid, r) in enumerate(sol.routes.items()):
         if i >= 3:
@@ -803,12 +947,14 @@ def print_solution_summary(sol: Solution, inst: Instance, title: str = ""):
 
 
 def example_run_alns(inst: Instance) -> Solution:
+    # 1) Khởi tạo rỗng
     init_empty = build_initial_solution(inst)
     evaluate(init_empty, inst)
     print("Initial (empty) obj:", init_empty.objective)
 
-    print("\n[DEBUG] Build initial solution with repair_greedy ...")
+    # 2) Dùng greedy để tạo initial solution khả thi hơn
     rng_init = random.Random(0)
+    print("\n[DEBUG] Build initial solution with repair_greedy ...")
     init_sol = repair_greedy(init_empty.copy(), inst, rng_init)
     evaluate(init_sol, inst)
     comps_init = init_sol.meta["components"]
@@ -817,13 +963,14 @@ def example_run_alns(inst: Instance) -> Solution:
     print("[DEBUG] #visited =", len(init_sol.meta["visited"]))
 
     destroy_ops = {
-        "random": lambda s, i, r: destroy_random(s, i, r, remove_ratio=0.05),
+        "random":  lambda s,i,r: destroy_random(s,i,r,remove_ratio=0.05),
         "cluster": destroy_cluster,
-        "shaw": destroy_shaw_related,
+        "shaw":    destroy_shaw_related,
     }
     repair_ops = {
         "greedy": repair_greedy,
-        # "regret": repair_regret,
+        "greedy_feasible": repair_greedy_feasible,
+        "regret": repair_regret,
     }
 
     best = alns(
@@ -831,7 +978,7 @@ def example_run_alns(inst: Instance) -> Solution:
         initial_solution=init_sol,
         destroy_ops=destroy_ops,
         repair_ops=repair_ops,
-        max_iter=200,
+        max_iter=200,          # final run
         segment_length=30,
         reaction_factor=0.2,
         start_temperature=1000,
@@ -842,8 +989,8 @@ def example_run_alns(inst: Instance) -> Solution:
     print_solution_summary(best, inst, title="ALNS solution (final)")
     return best
 
-
 def example_run_tabu(inst: Instance, sol_alns: Solution) -> Solution:
+    # Dùng nghiệm ALNS làm initial cho Tabu
     init_sol = sol_alns.copy()
     evaluate(init_sol, inst)
     print("Initial obj TABU (from ALNS):", init_sol.objective)
@@ -851,7 +998,7 @@ def example_run_tabu(inst: Instance, sol_alns: Solution) -> Solution:
     best = tabu_search(
         inst=inst,
         initial_solution=init_sol,
-        max_iter=100,
+        max_iter=100,      # có thể 100–150 nếu đủ thời gian
         max_neighbors=80,
         tabu_tenure=20,
         rng_seed=2,
@@ -859,3 +1006,69 @@ def example_run_tabu(inst: Instance, sol_alns: Solution) -> Solution:
     print("[TABU] best obj =", best.objective)
     print_solution_summary(best, inst, title="TABU solution (final)")
     return best
+
+
+def get_output_dir() -> str:
+    """
+    Tạo (nếu chưa có) folder OUTPUT nằm cùng thư mục với file .py hiện tại.
+    VD: /Users/.../Python_processing/optimizer/OUTPUT
+    """
+    base_dir = os.path.dirname(os.path.abspath(__file__))
+    out_dir = os.path.join(base_dir, "OUTPUT")
+    os.makedirs(out_dir, exist_ok=True)
+    return out_dir
+
+#OUTPUT
+def export_solution_to_excel(sol: Solution, inst: Instance, run_name: str = "lan1_opt"):
+    """
+    Ghi nghiệm ra file Excel:
+    - Sheet 1: routes (từng điểm dừng theo thứ tự)
+    - Sheet 2: components (các thành phần objective)
+    Tên file: <run_name>_năm-tháng-ngày__giờhphút.xlsx
+    """
+    # Đảm bảo meta đã tính đầy đủ
+    evaluate(sol, inst)
+
+    out_dir = get_output_dir()
+
+    # Tạo timestamp kiểu: 2025-02-14__21h37
+    ts = datetime.datetime.now().strftime("%Y-%m-%d__%Hh%M")
+    filename = f"{run_name}_{ts}.xlsx"
+    out_path = os.path.join(out_dir, filename)
+
+    # --------- Sheet 1: Routes chi tiết ---------
+    rows = []
+    for vid, route in sol.routes.items():
+        depot_id = inst.depots.get(vid, "")
+        for idx, node in enumerate(route.stops):
+            is_customer = int(node in inst.customers)
+            demand_w = inst.demand_w.get(node, 0.0)
+            demand_v = inst.demand_v.get(node, 0.0)
+            lat, lon = inst.coords.get(node, (None, None))
+            cluster = inst.customer_cluster.get(node, None)
+
+            rows.append({
+                "Vehicle_ID": vid,
+                "Stop_Order": idx,
+                "Node_ID": node,
+                "Is_Customer": is_customer,
+                "Depot_of_Vehicle": depot_id,
+                "Demand_Weight": demand_w,
+                "Demand_Volume": demand_v,
+                "Latitude": lat,
+                "Longitude": lon,
+                "Cluster/Depot_Assigned": cluster,
+            })
+
+    routes_df = pd.DataFrame(rows)
+
+    # --------- Sheet 2: Objective components ---------
+    comps = sol.meta.get("components", {})
+    comp_df = pd.DataFrame([comps])
+
+    # Ghi ra Excel với 2 sheet
+    with pd.ExcelWriter(out_path, engine="xlsxwriter") as writer:
+        routes_df.to_excel(writer, sheet_name="routes", index=False)
+        comp_df.to_excel(writer, sheet_name="objective_components", index=False)
+
+    print(f"[OUTPUT] Đã ghi file kết quả: {out_path}")
