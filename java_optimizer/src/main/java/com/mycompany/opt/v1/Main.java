@@ -2,6 +2,12 @@ package com.mycompany.opt.v1;
 
 import java.io.File;
 import java.io.IOException;
+import java.nio.charset.StandardCharsets;
+import java.nio.file.Files;
+import java.nio.file.Path;
+import java.nio.file.Paths;
+import java.time.LocalDateTime;
+import java.time.format.DateTimeFormatter;
 import java.util.*;
 
 /**
@@ -17,9 +23,12 @@ public class Main {
         System.out.println("=".repeat(80));
         System.out.println();
         
+        final String cityName = "Can_Tho";
+        final String outputBaseDir = "java_optimizer/output";
+        
         try {
             // Find data path
-            String dataPath = findDataPath("Can_Tho");
+            String dataPath = findDataPath(cityName);
             if (dataPath == null) {
                 System.err.println("❌ Không tìm thấy thư mục dữ liệu!");
                 return;
@@ -91,6 +100,7 @@ public class Main {
             System.out.println("\n" + "=".repeat(80));
             System.out.println("✅ Hoàn thành!");
             System.out.println("=".repeat(80));
+            saveResults(outputBaseDir, cityName, results);
             
             // Cleanup
             solver.shutdown();
@@ -124,6 +134,50 @@ public class Main {
         System.out.println("✅ Đường dẫn dữ liệu: " + dataPath);
         System.out.println("   📁 Đường dẫn đầy đủ: " + dir.getAbsolutePath());
         return dataPath;
+    }
+    
+    private static void saveResults(String outputBaseDir, String cityName, Map<String, Object> results) throws IOException {
+        @SuppressWarnings("unchecked")
+        List<ClusterLeaderSolver.CustomerAssignment> assignments =
+            (List<ClusterLeaderSolver.CustomerAssignment>) results.get("assignments");
+        
+        DateTimeFormatter formatter = DateTimeFormatter.ofPattern("yyyyMMdd_HHmmss");
+        String timestamp = LocalDateTime.now().format(formatter);
+        
+        Path cityDir = Paths.get(outputBaseDir, cityName);
+        Files.createDirectories(cityDir);
+        
+        Path assignmentsPath = cityDir.resolve("assignments_" + timestamp + ".csv");
+        try (java.io.BufferedWriter writer = Files.newBufferedWriter(assignmentsPath, StandardCharsets.UTF_8)) {
+            writer.write("customer_id,cluster_id,medoid_id,medoid_index,distance_km");
+            writer.newLine();
+            for (ClusterLeaderSolver.CustomerAssignment assignment : assignments) {
+                writer.write(String.join(",",
+                    assignment.customerId,
+                    Integer.toString(assignment.clusterId),
+                    assignment.medoidId,
+                    Integer.toString(assignment.medoidIndex),
+                    String.format(Locale.US, "%.6f", assignment.distanceKm)
+                ));
+                writer.newLine();
+            }
+        }
+        
+        Path summaryPath = cityDir.resolve("summary_" + timestamp + ".txt");
+        try (java.io.BufferedWriter writer = Files.newBufferedWriter(summaryPath, StandardCharsets.UTF_8)) {
+            writer.write("City: " + cityName);
+            writer.newLine();
+            writer.write("Best P: " + results.get("bestP"));
+            writer.newLine();
+            writer.write("Best Objective: " + results.get("bestObjective"));
+            writer.newLine();
+            writer.write("Total assignments: " + assignments.size());
+            writer.newLine();
+            writer.write("Assignments file: " + assignmentsPath.toAbsolutePath());
+            writer.newLine();
+        }
+        
+        System.out.println("💾 Đã lưu kết quả vào: " + cityDir.toAbsolutePath());
     }
 }
 

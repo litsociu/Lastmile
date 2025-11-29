@@ -1,0 +1,5 @@
+City: Can_Tho
+Best P: 8
+Best Objective: 7292.084818916201
+Total assignments: 3996
+Assignments file: D:\A UEH_UNIVERSITY\UEH_Subjects\LMDO\Lastmile\java_optimizer\output\Can_Tho\assignments_20251118_075509.csv

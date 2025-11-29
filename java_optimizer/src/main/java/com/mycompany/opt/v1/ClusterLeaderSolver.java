@@ -22,8 +22,8 @@ import java.util.Comparator;
  */
 public class ClusterLeaderSolver {
     private static final double EARTH_RADIUS_KM = 6371.0;
-    private static final int MAX_2OPT_ITERATIONS = 5000;
-    private static final int PAM_MAX_ITERATIONS = 200;
+    private static final int MAX_2OPT_ITERATIONS = 30000;  // Further increased for maximum TSP optimization
+    private static final int PAM_MAX_ITERATIONS = 1000;    // Further increased for maximum clustering quality
     private static final int DEFAULT_MAX_EXACT_N = 2000;
     
     private List<Customer> customers;
@@ -340,7 +340,7 @@ public class ClusterLeaderSolver {
      */
     private KMeansResult kMeansClustering(List<double[]> coords, int k) {
         int N = coords.size();
-        int maxIterations = 200;
+        int maxIterations = 1000;  // Further increased for maximum clustering convergence
         
         // Initialize centroids randomly
         List<double[]> centroids = new ArrayList<>();
