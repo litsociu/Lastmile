@@ -1,15 +1,15 @@
 # ============================================================
-# LAST-MILE DELIVERY – FULL MODEL + ALNS + TABU (DN)
+# LAST-MILE DELIVERY – FULL MODEL + ALNS + TABU (HỒ CHÍ MINH)
 # ============================================================
 # Bản này giữ nguyên toàn bộ mô hình và thuật toán từ code gốc của bạn.
-# Chỉ thay hàm load_data() để phù hợp folder:``
+# Chỉ thay hàm load_data() để phù hợp folder:
 #
-#   Zzz_data/LMDO processed/Da_Nang/
+#   Zzz_data/LMDO processed/Ho_Chi_Minh_City/
 #       customers.xlsx
 #       depots.xlsx
 #       vehicles.xlsx
 #       roads.xlsx
-#       dn_depot.py
+#       hcm.py
 # ============================================================
 
 from __future__ import annotations
@@ -126,7 +126,7 @@ def geo_distance(lat1, lon1, lat2, lon2):
 
 
 # ============================================================
-# 3. BUILD INSTANCE FOR D003
+# 3. BUILD INSTANCE FOR D001
 # ============================================================
 
 def build_instance_for_depot_prefix(
@@ -181,17 +181,8 @@ def build_instance_for_depot_prefix(
 
     for _, r in cust_sub.iterrows():
         cid = r["Customer_ID"]
-                # --- Chuẩn hoá demand về cùng đơn vị với capacity của xe ---
-        raw_w = float(r["Order_Weight"])    # kg trong file gốc
-        raw_v = float(r["Order_Volume"])    # m3 (hoặc dm3) trong file gốc
-
-        # Hệ số đổi đơn vị (tự điều chỉnh cho phù hợp dữ liệu bên bạn)
-        ALPHA_W = 20.0   # 1 đơn vị 'capacity weight' ~ 20 kg
-        ALPHA_V = 0.05   # 1 đơn vị 'capacity volume' ~ 0.05 m3 (ví dụ)
-
-        demand_w[cid] = raw_w / ALPHA_W
-        demand_v[cid] = raw_v / ALPHA_V
-
+        demand_w[cid] = float(r["Order_Weight"])
+        demand_v[cid] = float(r["Order_Volume"])
         service_time[cid] = float(r["Service_Time"])
         tw_start[cid] = float(time_str_to_min(r["Time_Window_Start"]))
         tw_end[cid] = float(time_str_to_min(r["Time_Window_End"]))
@@ -264,7 +255,7 @@ def build_instance_for_depot_prefix(
     for cid in customers_in_instance:
         phi = priority_map[cid]
         # TĂNG mạnh phạt khách không được phục vụ
-        penalty_unserved[cid] = 5000 * phi * max(demand_w[cid], 1)
+        penalty_unserved[cid] = 2e5 * phi * max(demand_w[cid], 1)
         lambda_E[cid] = 0.1 * phi    # phạt đến sớm nhẹ
         lambda_L[cid] = 2.0 * phi    # phạt đến trễ vừa phải
 
@@ -278,8 +269,8 @@ def build_instance_for_depot_prefix(
     lambda_depot_capacity = 1.0
 
     # GIẢM BIG_CAP và BIG_ROAD xuống, tránh “giết chết” mọi nghiệm có khách
-    BIG_CAP = 2000
-    BIG_ROAD = 2000
+    BIG_CAP = 1e4
+    BIG_ROAD = 1e4
 
 # Một khách không được phục vụ rất đắt.
 
@@ -611,50 +602,6 @@ def evaluate(
         print("===== END DEBUG EVALUATE =====\n")
 
     return F
-
-# ============================================================
-# 4b. HARD-CONSTRAINT CHECKERS (cho đề thi)
-# ============================================================
-
-def is_feasible(components: Dict[str, float], strict_tw: bool = True, eps: float = 1e-6) -> bool:
-    """
-    Kiểm tra nghiệm có hoàn toàn thỏa mãn các ràng buộc cứng hay không.
-
-    components: sol.meta["components"] sau khi evaluate()
-    strict_tw:
-        - True  => time-window cũng là hard constraint (tw_pen phải ~ 0)
-        - False => cho phép vi phạm nhẹ TW (tw_pen > 0 vẫn được).
-    eps: ngưỡng số học để tránh chuyện 1e-12 khác 0.
-    """
-    if components["unserved_pen"] > eps:
-        return False
-    if components["capacity_pen"] > eps:
-        return False
-    if components["road_pen"] > eps:
-        return False
-    if components["overtime_pen"] > eps:
-        return False
-    if components["dist_over_pen"] > eps:
-        return False
-    if components["depot_cap_pen"] > eps:
-        return False
-    if strict_tw and components["tw_pen"] > eps:
-        return False
-
-    # workload_pen chỉ là “cân bằng tải”, không phải hard constraint
-    return True
-
-
-def hard_objective(components: Dict[str, float], include_workload: bool = False) -> float:
-    """
-    Hàm mục tiêu "chuẩn đề thi" trên miền feasible:
-      - Mặc định: chỉ tính fixed + distance_cost.
-      - Nếu muốn tính thêm workload cho fairness thì bật include_workload=True.
-    """
-    obj = components["fixed"] + components["distance_cost"]
-    if include_workload:
-        obj += components["workload_pen"]
-    return obj
 
 # ============================================================
 # 5. ALNS: DESTROY / REPAIR OPERATORS
@@ -1019,13 +966,7 @@ def alns(
 
     current = initial_solution.copy()
     evaluate(current, inst)
-
-    # best_soft: vẫn giữ như cũ cho mục đích heuristic
-    best_soft = current.copy()
-
-    # best_feasible: nghiệm tốt nhất thỏa hard-constraint
-    best_feasible: Solution | None = None
-    best_feasible_obj: float = float("inf")   # theo hard_objective()
+    best = current.copy()
 
     temperature = start_temperature
 
@@ -1042,19 +983,9 @@ def alns(
 
         partial   = d_func(current.copy(), inst, rng)
         candidate = r_func(partial, inst, rng)
-        F_new = evaluate(candidate, inst)   # cập nhật cả candidate.meta
-
-        # ======= HARD-CONSTRAINT TRACKING =======
-        comps_new = candidate.meta.get("components", {})
-        if is_feasible(comps_new, strict_tw=True):
-            hard_obj = hard_objective(comps_new, include_workload=False)
-            if hard_obj < best_feasible_obj:
-                best_feasible_obj = hard_obj
-                best_feasible = candidate.copy()
-
-        # ======= SOFT-OBJECTIVE (như code gốc) =======
+        F_new = evaluate(candidate, inst)
         F_cur = current.objective
-        F_best_soft = best_soft.objective
+        F_best = best.objective
 
         accept = False
         if F_new < F_cur:
@@ -1069,10 +1000,10 @@ def alns(
         if accept:
             current = candidate
 
-        # reward theo soft objective
+        # reward
         reward = 0.0
-        if F_new < F_best_soft:
-            best_soft = candidate.copy()
+        if F_new < F_best:
+            best = candidate.copy()
             reward = 5.0
         elif F_new < F_cur:
             reward = 1.0
@@ -1104,34 +1035,17 @@ def alns(
         temperature = start_temperature * (1 - alpha) + end_temperature * alpha
 
         # LOG vòng lặp
+                # LOG vòng lặp
         if it % 20 == 0 or it == 1 or it == max_iter:
             comps_cur = current.meta.get("components", {})
-            comps_best_soft = best_soft.meta.get("components", {})
-            print(f"[ALNS] it={it}, current={current.objective:.2f}, best_soft={best_soft.objective:.2f}, T={temperature:.2f}")
+            comps_best = best.meta.get("components", {})
+            print(f"[ALNS] it={it}, current={current.objective:.2f}, best={best.objective:.2f}, T={temperature:.2f}")
             print("   current components:", {k: round(v, 2) for k, v in comps_cur.items()})
-            print("   best_soft components:", {k: round(v, 2) for k, v in comps_best_soft.items()})
-            if best_feasible is not None:
-                comps_feas = best_feasible.meta.get("components", {})
-                print("   best_feasible (hard) :", round(best_feasible_obj, 2),
-                      "| feas components:", {k: round(v, 2) for k, v in comps_feas.items()})
+            print("   best    components:", {k: round(v, 2) for k, v in comps_best.items()})
+
 
     print("[ALNS] Hoàn tất.")
-
-    # Kết luận: trả về nghiệm hard-feasible nếu có, ngược lại trả best_soft
-    if best_feasible is not None:
-        comps_feas = best_feasible.meta.get("components", {})
-        print("[ALNS] BEST FEASIBLE (hard-constraint):")
-        print("  Hard objective (fixed+distance):", round(best_feasible_obj, 2))
-        print("  Components:", {k: round(v, 2) for k, v in comps_feas.items()})
-        return best_feasible
-    else:
-        comps_soft = best_soft.meta.get("components", {})
-        print("[ALNS] Không tìm được nghiệm hoàn toàn feasible (vẫn còn penalty > 0).")
-        print("       Trả về best_soft để debug / kiểm tra data.")
-        print("  best_soft objective:", round(best_soft.objective, 2))
-        print("  Components:", {k: round(v, 2) for k, v in comps_soft.items()})
-        return best_soft
-
+    return best
 
 # ============================================================
 # 7. TABU SEARCH: relocate + swap
@@ -1222,13 +1136,7 @@ def tabu_search(
 
     current = initial_solution.copy()
     evaluate(current, inst)
-
-    # best_soft như cũ
-    best_soft = current.copy()
-
-    # best_feasible cho hard-constraint
-    best_feasible: Solution | None = None
-    best_feasible_obj: float = float("inf")
+    best = current.copy()
 
     tabu: Dict[Tuple[Any, ...], int] = {}
 
@@ -1245,16 +1153,8 @@ def tabu_search(
             cand = apply_move(current, mv, inst)
             F_new = evaluate(cand, inst)
 
-            # ======= HARD-CONSTRAINT TRACKING =======
-            comps_new = cand.meta.get("components", {})
-            if is_feasible(comps_new, strict_tw=True):
-                hard_obj = hard_objective(comps_new, include_workload=False)
-                if hard_obj < best_feasible_obj:
-                    best_feasible_obj = hard_obj
-                    best_feasible = cand.copy()
-
-            # Aspiration theo soft objective
-            if is_tabu and F_new >= best_soft.objective:
+            # Aspiration
+            if is_tabu and F_new >= best.objective:
                 continue
 
             if F_new < best_val:
@@ -1279,58 +1179,39 @@ def tabu_search(
         for a in to_remove:
             del tabu[a]
 
-        # cập nhật best_soft
-        if current.objective < best_soft.objective:
-            best_soft = current.copy()
+        if current.objective < best.objective:
+            best = current.copy()
         
         if it % 20 == 0 or it == 1 or it == max_iter:
             comps_cur = current.meta.get("components", {})
-            comps_best_soft = best_soft.meta.get("components", {})
-            print(f"[TABU] it={it}, current={current.objective:.2f}, best_soft={best_soft.objective:.2f}")
+            comps_best = best.meta.get("components", {})
+            print(f"[TABU] it={it}, current={current.objective:.2f}, best={best.objective:.2f}")
             print("   current components:", {k: round(v, 2) for k, v in comps_cur.items()})
-            print("   best_soft components:", {k: round(v, 2) for k, v in comps_best_soft.items()})
-            if best_feasible is not None:
-                comps_feas = best_feasible.meta.get("components", {})
-                print("   best_feasible (hard) :", round(best_feasible_obj, 2),
-                      "| feas components:", {k: round(v, 2) for k, v in comps_feas.items()})
+            print("   best    components:", {k: round(v, 2) for k, v in comps_best.items()})
 
     print("[TABU] Hoàn tất.")
-
-    if best_feasible is not None:
-        comps_feas = best_feasible.meta.get("components", {})
-        print("[TABU] BEST FEASIBLE (hard-constraint):")
-        print("  Hard objective (fixed+distance):", round(best_feasible_obj, 2))
-        print("  Components:", {k: round(v, 2) for k, v in comps_feas.items()})
-        return best_feasible
-    else:
-        comps_soft = best_soft.meta.get("components", {})
-        print("[TABU] Không tìm được nghiệm hoàn toàn feasible (vẫn còn penalty > 0).")
-        print("       Trả về best_soft để bạn kiểm tra lại data/ràng buộc.")
-        print("  best_soft objective:", round(best_soft.objective, 2))
-        print("  Components:", {k: round(v, 2) for k, v in comps_soft.items()})
-        return best_soft
-    
+    return best
 # ============================================================
-# 9. LOAD DATA FOR DN (ONLY THIS IS NEW)
+# 9. LOAD DATA FOR HCMC (ONLY THIS IS NEW)
 # ============================================================
 
 def load_data():
     """
-    Load bộ dữ liệu Đà Nẵng nằm cùng thư mục với dn_depot.py.
+    Load bộ dữ liệu Hồ Chí Minh (D001) nằm cùng thư mục với hcm.py.
     """
-    this_dir = os.path.dirname(os.path.abspath(__file__))
+    BASE_DIR = "/Users/alicecin/Documents/Lastmile/Zzz_data/LMDO processed/Ho_Chi_Minh_City"
 
-    customers_path = os.path.join(this_dir, "customers_clustered.xlsx")
-    depots_path    = os.path.join(this_dir, "depots.xlsx")
-    vehicles_path  = os.path.join(this_dir, "vehicles.xlsx")
-    roads_path     = os.path.join(this_dir, "roads.xlsx")
+    customers_path = os.path.join(BASE_DIR, "customers_clustered.xlsx")
+    depots_path    = os.path.join(BASE_DIR, "depots.xlsx")
+    vehicles_path  = os.path.join(BASE_DIR, "vehicles.xlsx")
+    roads_path     = os.path.join(BASE_DIR, "roads.xlsx")
 
     customers_df = pd.read_excel(customers_path)
     depots_df    = pd.read_excel(depots_path)
     vehicles_df  = pd.read_excel(vehicles_path)
     roads_df     = pd.read_excel(roads_path)
 
-    print("=== LOAD DATA DN (D003) ===")
+    print("=== LOAD DATA HCMC (D001) ===")
     print(customers_path)
     print(depots_path)
     print(vehicles_path)
@@ -1458,13 +1339,13 @@ if __name__ == "__main__":
 
     try:
         customers_df, depots_df, vehicles_df, roads_df = load_data()
-        inst = build_instance_for_depot_prefix("D003", customers_df, depots_df, vehicles_df, roads_df)
+        inst = build_instance_for_depot_prefix("D001", customers_df, depots_df, vehicles_df, roads_df)
 
-        print(">>> ALNS D003 ")
+        print(">>> ALNS D001")
         sol_alns = example_run_alns(inst)
         print(">>> DONE ALNS:", sol_alns.objective)
 
-        print("\n>>> TABU D003")
+        print("\n>>> TABU D001")
         sol_tabu = example_run_tabu(inst, sol_alns)
         print(">>> DONE TABU:", sol_tabu.objective)
 
