@@ -112,11 +112,13 @@ def visualize_solution(
 
 if __name__ == "__main__":
     # Example usage
-    base_dir = "d:\\A UEH_UNIVERSITY\\UEH_Subjects\\operation reseach\\LMDO\\Lastmile\\Python_processing\\optimizer"
+    project_dir = r"d:\A UEH_UNIVERSITY\UEH_Subjects\operation reseach\LMDO\Lastmile\Python_processing\optimizer"
+    data_dir = r"D:\A UEH_UNIVERSITY\UEH_Subjects\operation reseach\LMDO\Lastmile\Zzz_data\LMDO processed\Ho_Chi_Minh_City"
+    
     visualize_solution(
-        routes_path=os.path.join(base_dir, "OUTPUT_PHONG", "result_routes.xlsx"),
-        clusters_path=os.path.join(base_dir, "OUTPUT_PHONG", "result_clusters.xlsx"),
-        depots_path=os.path.join(base_dir, "data", "depots.xlsx"), # Adjust path if needed
-        customers_path=os.path.join(base_dir, "data", "customers_clustered.xlsx"), # Adjust path if needed
-        output_html=os.path.join(base_dir, "OUTPUT_PHONG", "visualization.html")
+        routes_path=os.path.join(project_dir, "OUTPUT_PHONG", "result_routes.xlsx"),
+        clusters_path=os.path.join(project_dir, "OUTPUT_PHONG", "result_clusters.xlsx"),
+        depots_path=os.path.join(data_dir, "depots.xlsx"),
+        customers_path=os.path.join(data_dir, "customers.xlsx"), # Note: customers.xlsx, not customers_clustered.xlsx based on config.py
+        output_html=os.path.join(project_dir, "OUTPUT_PHONG", "visualization.html")
     )
