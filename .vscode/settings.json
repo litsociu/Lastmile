@@ -1,3 +1,5 @@
 {
-    "cppbuild.isEnabled": false
+  "cppbuild.isEnabled": false,
+  "C_Cpp.default.compilerPath": "d:\\A UEH_UNIVERSITY\\UEH_Subjects\\operation reseach\\LMDO\\Lastmile\\Cpp_optimizer\\test\\main.cpp",
+  "cmake.ignoreCMakeListsMissing": true
 }
