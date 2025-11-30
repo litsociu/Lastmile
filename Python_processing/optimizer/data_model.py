@@ -16,16 +16,25 @@ class Instance:
     travel_time: Dict[str, Dict[str, float]]
     road_allowed: Dict[str, Dict[str, Dict[str, int]]]
 
+    # --- Tham số khách hàng ---
     demand_w: Dict[str, float]
     demand_v: Dict[str, float]
     service_time: Dict[str, float]
+
+    # Time window CHỈ cho khách
     tw_start: Dict[str, float]
     tw_end: Dict[str, float]
+
     priority: Dict[str, int]
     delivery_type: Dict[str, str]
     coords: Dict[str, Tuple[float,float]]
     customer_cluster: Dict[str, str]
 
+    # --- Tham số kho (depot) ---
+    depot_open: Dict[str, float]
+    depot_close: Dict[str, float]
+
+    # --- Tham số xe ---
     vehicle_cap_w: Dict[str, float]
     vehicle_cap_v: Dict[str, float]
     shift_max: Dict[str, float]
@@ -33,6 +42,7 @@ class Instance:
     fixed_cost: Dict[str, float]
     var_cost: Dict[str, float]
 
+    # --- Penalty & lambda ---
     penalty_unserved: Dict[str, float]
     lambda_E: Dict[str, float]
     lambda_L: Dict[str, float]
