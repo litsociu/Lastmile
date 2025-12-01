@@ -1319,7 +1319,7 @@ def load_data():
     """
     Load bộ dữ liệu Hồ Chí Minh (D001) nằm cùng thư mục với hcm.py.
     """
-    BASE_DIR = "/Users/alicecin/Documents/Lastmile/Zzz_data/LMDO processed/Ho_Chi_Minh_City"
+    BASE_DIR = "D:\LogChaLan\Lastmile-1\Zzz_data\LMDO processed\Ho_Chi_Minh_City"
 
     customers_path = os.path.join(BASE_DIR, "customers_clustered.xlsx")
     depots_path    = os.path.join(BASE_DIR, "depots.xlsx")
